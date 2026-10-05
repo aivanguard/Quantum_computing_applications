@@ -23,8 +23,6 @@ from qiskit.circuit.library import TwoLocal
 from qiskit_algorithms import SamplingVQE
 from qiskit_algorithms.optimizers import COBYLA
 
-
-
 #!pip install streamlit
 
 #Obtain the current prices through a market API such as Twelve Data in this case. See the stock price compilation python script
@@ -38,9 +36,11 @@ portfolio_data = stock_data[selected_assets].cov()
 print("Stock Covariance Matrix:")
 print(portfolio_data)
 
+#Use the quantity of tickers for stocks for setting the total qubits to run with the IBM backend
+num_assets =len(selected_assets)
 expected_returns = stock_data[selected_assets].mean()
 
-#Select a risk and asset number for the first portfolio optimization run
+#Select a risk and asset number for the first portfolio optimization
 risk_factor = 0.5  # Adjust risk tolerance
 budget = 4  # Number of assets to select
 
@@ -52,46 +52,56 @@ portfolio = PortfolioOptimization(
     budget=budget
 )
 
-# Convert to the Quadratic Program for the portfolio optimization training
+# Convert it to the Quadratic Program for the portfolio return 
 quadratic_program = portfolio.to_quadratic_program()
 print("\nPortfolio Optimization Problem:")
 print(quadratic_program)
 
-#Use the Sampling VQE algorithm and first, Define the Variational Ansatz (Two-Local circuit)
-ansatz = TwoLocal(rotation_blocks=["ry", "rz"], entanglement_blocks="cz")
 
-# Define the selected classical optimizer which in this case could be chosen as Adam as well
+
+#Use the Sampling VQE algorithm and first, Define Variational Ansatz (Two-Local circuit)
+#Choose only one rep for the 1st run for the time to run but it can be increased to say, reps=3 in the ansatz 
+ansatz = TwoLocal(num_assets,  rotation_blocks=["ry", "rz"], entanglement_blocks="cz")
+# Define the optimizer to use
 optimizer = COBYLA(maxiter=100)
-
-# Using the Qiskit State Vector Sampler Simulator for 6 securities, Initialize the Sampler primitive
+# Using the State Vector Sampler Simular, Initialize the Sampler primitive
 sampler = Sampler()
 
-# Set up the SamplingVQE algorithm since QAOA is a specialized, structurally constrained subclass of SamplingVQE
+# Set up the the SamplingVQE algorithm
 sampling_vqe = SamplingVQE(sampler=sampler, ansatz=ansatz, optimizer=optimizer)
 
-# Solve the Portfolio Optimization Problem using the Minimum Eigenvalue  Optimizer
+# Solve the Portfolio Optimization Problem using the Minimum Eigen Optimizer
 qaoa = MinimumEigenOptimizer(sampling_vqe)
 result = qaoa.solve(quadratic_program)
 
-#Results interpretation
-optimal_portfolio = portfolio.interpret(result)
-optimal_portfolio = np.atleast_1d(optimal_portfolio)  # Ensure 1D array with numpy
+#Refer to the Qiskit documentation to print the results in this format for probabilities those selected
+from qiskit.result import QuasiDistribution
+from qiskit_algorithms import NumPyMinimumEigensolver, QAOA, SamplingVQE
+import numpy as np
 
-# Select indices of chosen assets
-selected_assets = np.where(optimal_portfolio == 1)[0]
-selected_tickers = [stock_data.columns[i] for i in selected_assets]
+def print_result(result):
+    selection = result.x
+    value = result.fval
+    print("Optimal: selection {}, value {:.4f}".format(selection, value))
 
-# Print selected assets
-print(f"\nOptimal Portfolio Allocation: {selected_tickers}")
+    eigenstate = result.min_eigen_solver_result.eigenstate
+    if isinstance(eigenstate, QuasiDistribution):
+        probabilities = eigenstate.binary_probabilities()
+    elif isinstance(eigenstate, dict):
+        probabilities = {k: np.abs(v) ** 2 for k, v in eigenstate.items()}
+    else:
+        probabilities = {k: np.abs(v) ** 2 for k, v in eigenstate.to_dict().items()}
 
-#Visualize Optimal Portfolio Selection
-all_assets = ['NVDA', 'OXY', 'TXG', 'CVE', 'FTNT', 'TWST']
+    print("\n----------------- Full result ---------------------")
+    print("selection\tvalue\t\tprobability")
+    print("---------------------------------------------------")
+    probabilities = sorted(probabilities.items(), key=lambda x: x[1], reverse=True)
 
-plt.figure(figsize=(8, 5))
-colors = ['green' if asset in selected_tickers else 'gray' for asset in all_assets]
-plt.bar(all_assets, expected_returns, color=colors)
-plt.xlabel("Assets")
-plt.ylabel("Expected Returns")
-plt.title("Optimal Portfolio Allocation")
-plt.show()
+    for k, v in probabilities:
+        x = np.array([int(i) for i in list(reversed(k))])
+        value = portfolio.to_quadratic_program().objective.evaluate(x)
+        print("%10s\t%.4f\t\t%.4f" % (x, value, v))
+#In the printed reuslts a lower (more negative) value represents a higher expected return relative to the risk/variance penalty
+#Multiply the assets selected by the vector of stock tickers to get the 4 out of 6 selected by the VQE job
+print_result(result)
 
